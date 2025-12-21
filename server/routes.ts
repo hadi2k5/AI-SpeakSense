@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
+import { createGoogleAuthRouter } from "../google-auth-module/src/server/router";
 import {
   insertPracticeSessionSchema,
   insertSessionMessageSchema,
@@ -105,6 +106,28 @@ export async function registerRoutes(
 ): Promise<Server> {
   await setupAuth(app);
   registerAuthRoutes(app);
+
+  // Google Sign-In (if credentials are configured)
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    const appUrl = process.env.REPLIT_DEV_DOMAIN 
+      ? `https://${process.env.REPLIT_DEV_DOMAIN}` 
+      : process.env.APP_URL || "http://localhost:5000";
+    
+    const googleAuthRouter = createGoogleAuthRouter({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      redirectUri: `${appUrl}/api/google-auth/google/callback`,
+      successRedirect: "/dashboard",
+      failureRedirect: "/",
+      scopes: ["openid", "email", "profile"],
+      onUserAuthenticated: async (user) => {
+        console.log("Google user authenticated:", user.email);
+      },
+    });
+    
+    app.use("/api/google-auth", googleAuthRouter);
+    console.log("Google Sign-In enabled");
+  }
 
   await initializeDefaults();
 
