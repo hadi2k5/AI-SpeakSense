@@ -20,8 +20,59 @@ import {
   User,
   Sparkles,
   Loader2,
+  Mic,
+  MicOff,
 } from "lucide-react";
 import type { PracticeSession, SessionMessage } from "@shared/schema";
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+interface SpeechRecognitionResult {
+  readonly length: number;
+  item(index: number): SpeechRecognitionAlternative;
+  [index: number]: SpeechRecognitionAlternative;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionResultList {
+  readonly length: number;
+  item(index: number): SpeechRecognitionResult;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionInstance extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+
+interface SpeechRecognitionConstructor {
+  new(): SpeechRecognitionInstance;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition: SpeechRecognitionConstructor;
+    webkitSpeechRecognition: SpeechRecognitionConstructor;
+  }
+}
 
 export default function PracticeLive() {
   const { id } = useParams<{ id: string }>();
@@ -34,9 +85,68 @@ export default function PracticeLive() {
   const [streamingContent, setStreamingContent] = useState("");
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isTimerRunning, setIsTimerRunning] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setSpeechSupported(true);
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+
+      recognition.onresult = (event) => {
+        let transcript = "";
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        setInput(transcript);
+      };
+
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        setIsRecording(false);
+        if (event.error !== "aborted") {
+          toast({
+            title: "Microphone Error",
+            description: "Could not access microphone. Please check permissions.",
+            variant: "destructive",
+          });
+        }
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+    };
+  }, [toast]);
+
+  const toggleRecording = useCallback(() => {
+    if (!recognitionRef.current) return;
+
+    if (isRecording) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+    } else {
+      setInput("");
+      recognitionRef.current.start();
+      setIsRecording(true);
+    }
+  }, [isRecording]);
 
   const { data: session, isLoading: sessionLoading } = useQuery<
     PracticeSession & { messages: SessionMessage[] }
@@ -285,18 +395,40 @@ export default function PracticeLive() {
 
       <div className="border-t p-4">
         <div className="mx-auto flex max-w-3xl gap-3">
+          {speechSupported && (
+            <Button
+              variant={isRecording ? "destructive" : "outline"}
+              size="icon"
+              onClick={toggleRecording}
+              disabled={isStreaming}
+              data-testid="button-microphone"
+              title={isRecording ? "Stop recording" : "Start voice input"}
+            >
+              {isRecording ? (
+                <MicOff className="h-4 w-4" />
+              ) : (
+                <Mic className="h-4 w-4" />
+              )}
+            </Button>
+          )}
           <Textarea
             ref={inputRef}
-            placeholder="Type your response..."
+            placeholder={isRecording ? "Listening... speak now" : "Type your response or use the microphone..."}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isStreaming}
+            disabled={isStreaming || isRecording}
             className="min-h-[60px] resize-none"
             data-testid="input-message"
           />
           <Button
-            onClick={sendMessage}
+            onClick={() => {
+              if (isRecording) {
+                recognitionRef.current?.stop();
+                setIsRecording(false);
+              }
+              sendMessage();
+            }}
             disabled={!input.trim() || isStreaming}
             className="shrink-0 px-4"
             data-testid="button-send"
@@ -309,7 +441,9 @@ export default function PracticeLive() {
           </Button>
         </div>
         <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-muted-foreground">
-          Press Enter to send, Shift+Enter for new line
+          {speechSupported 
+            ? "Press Enter to send, or click the microphone to speak" 
+            : "Press Enter to send, Shift+Enter for new line"}
         </p>
       </div>
     </div>
